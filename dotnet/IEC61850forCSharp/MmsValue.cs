@@ -1114,7 +1114,8 @@ namespace IEC61850
                 {
                     case MmsType.MMS_VISIBLE_STRING:
                     case MmsType.MMS_STRING:
-                        return Marshal.PtrToStringAnsi(MmsValue_toString(valueReference));
+                        // 修复中文乱码: 先获取原始指针，然后尝试多种编码
+                        return GetStringWithEncoding(MmsValue_toString(valueReference));
                     case MmsType.MMS_BOOLEAN:
                         return GetBoolean().ToString();
                     case MmsType.MMS_INTEGER:
@@ -1190,6 +1191,70 @@ namespace IEC61850
             IEnumerator IEnumerable.GetEnumerator()
             {
                 return new MmsValueEnumerator(this);
+            }
+
+            /// <summary>
+            /// 尝试多种编码解析字符串，解决中文乱码问题
+            /// 南自等国内设备可能使用 GB2312/GBK 编码
+            /// </summary>
+            private static string GetStringWithEncoding(IntPtr ptr)
+            {
+                if (ptr == IntPtr.Zero)
+                    return string.Empty;
+
+                // 首先获取原始字节数据
+                // 计算字符串长度（查找 null 终止符）
+                int len = 0;
+                while (Marshal.ReadByte(ptr, len) != 0)
+                {
+                    len++;
+                    if (len > 10000) break; // 安全限制
+                }
+
+                if (len == 0)
+                    return string.Empty;
+
+                byte[] bytes = new byte[len];
+                Marshal.Copy(ptr, bytes, 0, len);
+
+                // 检测是否为纯 ASCII
+                bool isPureAscii = true;
+                foreach (byte b in bytes)
+                {
+                    if (b > 127)
+                    {
+                        isPureAscii = false;
+                        break;
+                    }
+                }
+
+                if (isPureAscii)
+                {
+                    return Encoding.ASCII.GetString(bytes);
+                }
+
+                // 尝试 UTF-8 解码
+                try
+                {
+                    string utf8Result = Encoding.UTF8.GetString(bytes);
+                    // 检查是否有效（不包含替换字符）
+                    if (!utf8Result.Contains("\uFFFD"))
+                    {
+                        return utf8Result;
+                    }
+                }
+                catch { }
+
+                // 尝试 GB2312/GBK 解码（国内设备常用）
+                try
+                {
+                    Encoding gb2312 = Encoding.GetEncoding("GB2312");
+                    return gb2312.GetString(bytes);
+                }
+                catch { }
+
+                // 最后回退到 ANSI
+                return Marshal.PtrToStringAnsi(ptr) ?? string.Empty;
             }
 
             private class MmsValueEnumerator : IEnumerator
